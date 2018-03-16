@@ -184,7 +184,7 @@ int main(int argc, char* argv[]) {
   //   return -1;
   // }
   // int num_cams = stoi(argv[1]);
-  int num_cams = 1;
+  int num_cams = 2;
 
   // Create Thread safe Mats
   vector< boost::shared_ptr<ThreadSafeMat> > ts_img_ptrs;
@@ -220,7 +220,7 @@ int main(int argc, char* argv[]) {
     return -1;
 
   // Tags to track
-  vector<int> tag_ids = {1,2,3,4,5};
+  vector<int> tag_ids = {0,1,2,3,4,5,6};
   int num_tags = tag_ids.size();
 
   // Store detections of each tag for each cam
@@ -258,14 +258,14 @@ int main(int argc, char* argv[]) {
   testbed.parseOptions(argc, argv);
   // No image capture done by testbed
   // testbed.setup();
-  if (!testbed.isVideo()) {
-    cout << "Processing image: option is not supported" << endl;
-    testbed.loadImages();
-    return 0;
-  }
-  cout << "Processing video" << endl;
-  // No image capture done by testbed
+  // if (!testbed.isVideo()) {
+  //   cout << "Processing image: option is not supported" << endl;
+  //   testbed.loadImages();
+  //   return 0;
+  // }
+  // cout << "Processing video" << endl;
   // testbed.setupVideo();
+  // No image capture done by testbed
   int frame = 0;
   int first_iter = 1;
   double last_t = tic();
@@ -682,7 +682,7 @@ void capture(int device, boost::shared_ptr<ThreadSafeMat> ts_img_ptr){
     index++;
     if(index%100 == 0){
       c1=getTickCount();
-      cout << "capture : "<<device<<" fps " << getTickFrequency() * 100.0 / (c1-c0) << endl;
+      // cout << "capture : "<<device<<" fps " << getTickFrequency() * 100.0 / (c1-c0) << endl;
       c0 = c1;
     }
   }
@@ -727,7 +727,7 @@ void detector(int device, boost::shared_ptr<ThreadSafeMat> ts_img_ptr, boost::sh
     index++;
     if(index%100 == 0){
       c1=getTickCount();
-      cout << "detector : "<<device<<" fps " << getTickFrequency() * 100.0 / (c1-c0) << endl;
+      // cout << "detector : "<<device<<" fps " << getTickFrequency() * 100.0 / (c1-c0) << endl;
       c0 = c1;
     }
   }
