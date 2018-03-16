@@ -1,10 +1,20 @@
-#include "aprilvideointerface.h"
+#include <iostream>
 #include <unistd.h>
+#include <string>
+#include <time.h>
+
+#include <boost/thread.hpp>
+#include <opencv2/opencv.hpp>
+#include <Eigen/Core>
+#include <opencv2/core/eigen.hpp>
+#include <Eigen/Dense>
+
+#include "aprilvideointerface.h"
 #include "pathplanners.h"
 #include "controllers.h"
-#include <iostream>
 // For Arduino: serial port access class
 #include "Serial.h"
+
 using namespace std;
 using namespace cv;
 
@@ -103,17 +113,159 @@ void check_collision_possibility(AprilInterfaceAndVideoCapture &testbed, vector<
 
 
 
+
+
+
+
+class ThreadSafeMat
+{
+  public:
+    ThreadSafeMat(){};
+    // {
+    //  img = cv::Mat();
+    // }
+    ~ThreadSafeMat(){};
+
+    void write(cv::Mat img_new){
+      boost::unique_lock< boost::shared_mutex > img_mutex_lock(img_mutex);
+      img = img_new;
+    }
+
+    cv::Mat read(){
+      boost::shared_lock< boost::shared_mutex > img_mutex_lock(img_mutex);
+      return img;
+    }
+  
+  private:
+    cv::Mat img;
+    mutable boost::shared_mutex img_mutex;
+};
+
+class TSDetections
+{
+  public:
+    TSDetections()
+    {}
+    
+    ~TSDetections()
+    {}
+
+    void write( std::map< int, AprilTags::TagDetection > coods_new ){
+      boost::unique_lock< boost::shared_mutex > coods_mutex_lock(coods_mutex);
+      coods = coods_new;
+    }
+
+    std::map< int, AprilTags::TagDetection > read(){
+      boost::shared_lock< boost::shared_mutex > coods_mutex_lock(coods_mutex);
+      return coods;
+    }
+
+  private:
+    // std::vector< AprilTags::TagDetection > coods;
+    std::map< int, AprilTags::TagDetection > coods;
+    mutable boost::shared_mutex coods_mutex;
+};
+
+int calculate_homographies(vector< boost::shared_ptr<ThreadSafeMat> > ts_img_ptrs, int anchor_tag_id, vector<Mat> &homographies, vector<Eigen::Matrix3d> homographies2d, vector<Mat> &img_warped_masks);
+void compose_imgs(vector< boost::shared_ptr<ThreadSafeMat> > ts_img_ptrs, vector<Mat> &homographies, vector<Mat> &img_warped_masks, Mat &composition);
+void capture(int device, boost::shared_ptr<ThreadSafeMat> ts_img_ptr);
+void detector(int device, boost::shared_ptr<ThreadSafeMat> ts_img_ptr, boost::shared_ptr<TSDetections> ts_detections_ptr);
+void transform_tag(AprilTags::TagDetection &detection, cv::Mat &homography, cv::Mat &homography_base);
+// This function takes in the detections from all cameras, and outputs tag detections which are transformed to correspond to final composed image
+std::vector< AprilTags::TagDetection > get_unified_detections(vector< boost::shared_ptr<TSDetections> > ts_detections_ptrs, vector<int> &active_cams, vector<int> &tag_ids, vector<Mat> &homographies);
+
+
+
 int main(int argc, char* argv[]) {
+
+  // Set number of cameras
+  // if(argc != 2){
+  //   cout << "Enter number of cameras" << endl;
+  //   return -1;
+  // }
+  // int num_cams = stoi(argv[1]);
+  int num_cams = 1;
+
+  // Create Thread safe Mats
+  vector< boost::shared_ptr<ThreadSafeMat> > ts_img_ptrs;
+  for (int i = 0; i < num_cams; ++i){
+    boost::shared_ptr<ThreadSafeMat> ts_img_ptr(new ThreadSafeMat);
+    ts_img_ptrs.push_back( ts_img_ptr );
+  }
+
+  // Take one image from each device 
+  for (int i = 0; i < num_cams; ++i){
+    Mat img;
+    VideoCapture vid_cap = VideoCapture(i);
+    if(vid_cap.isOpened() == false)
+    {
+      cout << "Cannot open camera " << i << endl;
+      return -1;
+    }
+    // namedWindow("Camera "+to_string(i),1);
+    vid_cap >> img;
+    vid_cap.release();
+
+    ts_img_ptrs[i].get()->write(img);
+  }
+
+  // Calculate homographies
+  vector<Mat> homographies(num_cams);
+  vector<Eigen::Matrix3d> homographies2d(num_cams);
+  vector<Mat> img_warped_masks(num_cams);
+  int anchor_tag_id = 0;
+
+  int status = calculate_homographies(ts_img_ptrs, anchor_tag_id, homographies, homographies2d, img_warped_masks);
+  if(status == -1)
+    return -1;
+
+  // Tags to track
+  vector<int> tag_ids = {1,2,3,4,5};
+  int num_tags = tag_ids.size();
+
+  // Store detections of each tag for each cam
+  vector< boost::shared_ptr<TSDetections> > ts_detections_ptrs;
+  for (int i = 0; i < num_cams; ++i){
+    boost::shared_ptr<TSDetections> ts_detection_ptr(new TSDetections());
+    ts_detections_ptrs.push_back(ts_detection_ptr);
+  }
+
+  // Store which camera is currently active for particular tag
+  vector<int> active_cams(num_tags, -1);
+
+  // Store the threads
+  vector<boost::thread *> capture_threads;
+  vector<boost::thread *> detector_threads;
+
+  // Create detector and capture threads
+  for (int i = 0; i < num_cams; ++i){
+    capture_threads.push_back(new boost::thread(capture, i, ts_img_ptrs[i]) );
+    detector_threads.push_back(new boost::thread(detector, i, ts_img_ptrs[i], ts_detections_ptrs[i]));
+  }
+
+  // Store the composed image
+  // in Mat image
+
+
+
+
+
+
+
+
+
   AprilInterfaceAndVideoCapture testbed;
   testbed.parseOptions(argc, argv);
-  testbed.setup();
+  // No image capture done by testbed
+  // testbed.setup();
   if (!testbed.isVideo()) {
     cout << "Processing image: option is not supported" << endl;
     testbed.loadImages();
     return 0;
   }
   cout << "Processing video" << endl;
-  testbed.setupVideo();
+  // No image capture done by testbed
+  // testbed.setupVideo();
   int frame = 0;
   int first_iter = 1;
   double last_t = tic();
@@ -131,8 +283,10 @@ int main(int argc, char* argv[]) {
   }*/
   Serial s_transmit;
   s_transmit.open("/dev/ttyUSB0", 9600);
+  // No image capture done by testbed
   cv::Mat image;
   cv::Mat image_gray;
+  
   //make sure that lookahead always contain atleast the next path point
   //if not then the next point to the closest would automatically become target
   //PurePursuitController controller(40.0,2.0,14.5,70,70,128,false);
@@ -141,7 +295,11 @@ int main(int argc, char* argv[]) {
   //setMouseCallback(windowName, path_planner.CallBackFunc, &path_planner);
   int robotCount;
   int max_robots = 5;
-  int origin_tag_id = 0;//always 0
+  
+
+
+
+  int origin_tag_id = anchor_tag_id;//always 0
   //tag id should also not go beyond max_robots
   vector<vector<nd> > tp;//a map that would be shared among all
   vector<bot_config> bots(max_robots,bot_config(53,53,115,tp,40.0,reach_distance,14.5,75,75,128,false));
@@ -178,11 +336,25 @@ int main(int argc, char* argv[]) {
       bots[i].id = i;//0 is saved for origin
     }
     robotCount = 0;
-    testbed.m_cap >> image;
-    //image = imread("tagimage.jpg");
-    //undistort(image2, image, cameraMatrix, distortionCoefficients);
 
-    testbed.processImage(image, image_gray);//tags extracted and stored in class variable
+    // Get tag detections and display composed image
+    std::vector< AprilTags::TagDetection > tag_detections = get_unified_detections(ts_detections_ptrs, active_cams, tag_ids, homographies);
+    compose_imgs(ts_img_ptrs, homographies, img_warped_masks, image);
+    imshow("Composition", image);
+    waitKey(1);
+
+    // Get gray composed image
+    cvtColor(image, image_gray, CV_BGR2GRAY);
+
+
+    // Image capture and tag detection no longer done by testbed
+    // testbed.m_cap >> image;
+    //image = imread("tagimage.jpg");
+    // testbed.processImage(image, image_gray);//tags extracted and stored in class variable
+    
+    // Supply detections to testbed
+    testbed.processDetections(tag_detections);
+
     int n = testbed.detections.size();
     for(int i = 0;i<bots.size();i++){
       bots[i].plan.robot_tag_id = i;
@@ -336,5 +508,357 @@ int main(int argc, char* argv[]) {
       break;//until escape is pressed
     }
   }
+
+
+  // Destroy threads
+  for (int i = 0; i < num_cams; ++i){
+    capture_threads[i]->join();
+    delete capture_threads[i];
+
+    detector_threads[i]->join();
+    delete detector_threads[i];
+  }
+
+
   return 0;
 }
+
+
+
+
+
+
+
+
+int calculate_homographies(vector< boost::shared_ptr<ThreadSafeMat> > ts_img_ptrs, int anchor_tag_id, vector<Mat> &homographies, vector<Eigen::Matrix3d> homographies2d, vector<Mat> &img_warped_masks){
+  int num_imgs = ts_img_ptrs.size();
+
+  vector<Mat> imgs_gray(num_imgs);
+
+  AprilTags::TagCodes tagCodes = AprilTags::tagCodes36h11;
+  AprilTags::TagDetector *tagDetector = new AprilTags::TagDetector(tagCodes);
+
+  vector<vector<AprilTags::TagDetection>> tag_detection_vectors(num_imgs);
+  vector<vector<Point2f>> ref_points_vectors;
+  vector<AprilTags::TagDetection> anchor_tag_detections(num_imgs);
+  
+
+  // Detect reference points through anchor tag
+  for (int i = 0; i < num_imgs; ++i)
+  {
+    cvtColor(ts_img_ptrs[i].get()->read(), imgs_gray[i], CV_BGR2GRAY);
+    tag_detection_vectors[i] = tagDetector->extractTags(imgs_gray[i]);
+
+    // cout << "Camera " << i << endl;
+    bool anchor_tag_found(false);
+    for (int j = 0; j < tag_detection_vectors[i].size(); ++j)
+    {
+      // cout << "\t" << tag_detection_vectors[i][j].id << "\t" << tag_detection_vectors[i][j].cxy.first << " "<< tag_detection_vectors[i][j].cxy.second << endl;
+      
+      if(tag_detection_vectors[i][j].id == anchor_tag_id){
+
+        anchor_tag_detections[i] = tag_detection_vectors[i][j];
+
+        // vector<Point2f> ref_points(4);
+        vector<Point2f> ref_points;
+        for (int k = 0; k < 4; ++k)
+        {
+          ref_points.push_back(Point2f(tag_detection_vectors[i][j].p[k].first, tag_detection_vectors[i][j].p[k].second));
+          cout << i << " " << k << " " << tag_detection_vectors[i][j].p[k].first << " " << tag_detection_vectors[i][j].p[k].second << endl;
+        }
+        ref_points.push_back(Point2f(tag_detection_vectors[i][j].cxy.first, tag_detection_vectors[i][j].cxy.second));
+        cout << i << " c" << " " << tag_detection_vectors[i][j].cxy.first << " " << tag_detection_vectors[i][j].cxy.second << endl;
+        ref_points_vectors.push_back(ref_points);
+
+        anchor_tag_found = true;
+
+      }
+    }
+
+    if(anchor_tag_found == false){
+      cout << "Unable to find tag id " << anchor_tag_id << endl;
+      return -1;
+    }
+  }
+
+
+  // Calculate homographies
+  for (int i = 0; i < num_imgs; ++i)
+  {
+    homographies[i] = findHomography(ref_points_vectors[i], ref_points_vectors[0]);
+    // view 0 is taken as the base
+    // cout << hg << endl << endl;
+  }
+
+  // Stroe homographies2d
+  for (int i = 0; i < num_imgs; ++i)
+  {
+    homographies2d[i] = anchor_tag_detections[i].homography;
+    // Eigen::Matrix<double,3,3> m = anchor_tag_detections[i].homography;
+
+  }
+
+
+  // Calculate extreme points
+  vector<Point2f> img_corners;
+  img_corners.push_back(Point2f(0,0));
+  img_corners.push_back(Point2f(0,480));
+  img_corners.push_back(Point2f(640,480));
+  img_corners.push_back(Point2f(640,0));
+  // x=w y=h
+  double w_min=10000, w_max=-10000, h_min=10000, h_max=-10000; // Careful!
+  vector<vector<Point2f>> imgs_warped_corners(num_imgs);
+  for (int i = 0; i < num_imgs; ++i)
+  {
+    perspectiveTransform(img_corners, imgs_warped_corners[i], homographies[i]);
+
+    for (int j = 0; j < 4; ++j)
+    {
+      cout << i << " " << j << " " << imgs_warped_corners[i][j] << endl;
+      if(imgs_warped_corners[i][j].x < w_min) w_min = imgs_warped_corners[i][j].x;
+      if(imgs_warped_corners[i][j].x > w_max) w_max = imgs_warped_corners[i][j].x;
+      if(imgs_warped_corners[i][j].y < h_min) h_min = imgs_warped_corners[i][j].y;
+      if(imgs_warped_corners[i][j].y > h_max) h_max = imgs_warped_corners[i][j].y;
+    }
+  }
+  // cout << " " << w_min << " " << w_max << " " << h_min << " " << h_max << endl;
+
+  int output_w = ceil(w_max-w_min);
+  int output_h = ceil(h_max-h_min);
+
+  double shift_w = -w_min;
+  double shift_h = -h_min;
+
+  Mat homography_shift = (Mat_<double>(3, 3) << 1,0,shift_w,0,1,shift_h,0,0,1);
+  // Eigen::Matrix3d homography2d_shift = (Eigen::Matrix4d() << 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16).finished();
+
+  // Add translation to homographies
+  for (int i = 0; i < num_imgs; ++i)
+  {
+    homographies[i] = homography_shift*homographies[i];
+  }
+
+  // Create ROI masks
+  Mat mask_base = Mat(480, 640, CV_8UC1);
+  mask_base.setTo(cv::Scalar(255,255,255));
+  Mat output_covered = Mat(output_h, output_w, CV_8UC1);
+  output_covered.setTo(cv::Scalar(0));
+
+  for (int i = 0; i < num_imgs; ++i)
+  {
+    warpPerspective(mask_base, img_warped_masks[i], homographies[i], Size(output_w, output_h));
+    // Add uncovered area only
+    img_warped_masks[i] -= output_covered;
+    output_covered += img_warped_masks[i];
+  }
+
+  return 0;
+}
+
+void compose_imgs(vector< boost::shared_ptr<ThreadSafeMat> > ts_img_ptrs, vector<Mat> &homographies, vector<Mat> &img_warped_masks, Mat &composition){
+  Mat img_warped;
+  composition = Mat(img_warped_masks[0].rows, img_warped_masks[0].cols, CV_64F, double(5));
+  for (int i = 0; i < ts_img_ptrs.size(); ++i)
+  {
+    warpPerspective(ts_img_ptrs[i].get()->read(), img_warped, homographies[i], img_warped_masks[0].size());
+    img_warped.copyTo(composition, img_warped_masks[i]);
+  }
+}
+
+void capture(int device, boost::shared_ptr<ThreadSafeMat> ts_img_ptr){
+
+  cv::VideoCapture vid_cap = cv::VideoCapture(device);
+  cv::Mat img;
+
+  int index = 0;
+  double c0=getTickCount(), c1;
+
+  while(1)
+  // for (int i = 0; i < 100; ++i)
+  {
+    vid_cap >> img;
+    ts_img_ptr.get()->write(img);
+
+    index++;
+    if(index%100 == 0){
+      c1=getTickCount();
+      cout << "capture : "<<device<<" fps " << getTickFrequency() * 100.0 / (c1-c0) << endl;
+      c0 = c1;
+    }
+  }
+}
+
+void detector(int device, boost::shared_ptr<ThreadSafeMat> ts_img_ptr, boost::shared_ptr<TSDetections> ts_detections_ptr){
+  cv::Mat img;
+  cv::Mat img_gray;
+
+
+  AprilTags::TagCodes tagCodes = AprilTags::tagCodes36h11;
+  AprilTags::TagDetector *tagDetector = new AprilTags::TagDetector(tagCodes);
+  vector<AprilTags::TagDetection> tag_detections;
+
+
+  int index = 0;
+  double c0=getTickCount(), c1;
+
+  while(1)
+  // for (int i = 0; i < 100; ++i)
+  {
+    img = ts_img_ptr.get()->read();
+    
+    cvtColor(img, img_gray, CV_BGR2GRAY);
+    tag_detections = tagDetector->extractTags(img_gray);
+
+
+
+    // std::vector< AprilTags::TagDetection > coods;
+    std::map< int, AprilTags::TagDetection > coods;
+
+    for (int i = 0; i < tag_detections.size(); ++i)
+    {
+      // AprilTags::TagDetection cood = tag_detections[i].cxy;
+      coods[ tag_detections[i].id ] = tag_detections[i];
+      // cout << "camera:" << device << " tag:" << tag_detections[i].id << endl;
+    }
+
+    ts_detections_ptr.get()->write(coods);
+
+
+    index++;
+    if(index%100 == 0){
+      c1=getTickCount();
+      cout << "detector : "<<device<<" fps " << getTickFrequency() * 100.0 / (c1-c0) << endl;
+      c0 = c1;
+    }
+  }
+}
+
+std::vector< AprilTags::TagDetection > get_unified_detections(vector< boost::shared_ptr<TSDetections> > ts_detections_ptrs, vector<int> &active_cams, vector<int> &tag_ids, vector<Mat> &homographies){
+  
+  std::vector< AprilTags::TagDetection > unified_tag_detections;
+
+  vector< std::map< int,AprilTags::TagDetection > > cam_tag_detections;
+  for (int i = 0; i < ts_detections_ptrs.size(); ++i)
+  {
+    // For each camera
+    cam_tag_detections.push_back( ts_detections_ptrs[i].get()->read() );
+  }
+
+  for (int i = 0; i < tag_ids.size(); ++i)
+  {
+    // For each tag which has an active camera
+    if(active_cams[i] != -1){
+      try{
+        // Get value if it exists in the tags detected by this tag's active camera
+        AprilTags::TagDetection detection = cam_tag_detections[ active_cams[i] ].at(tag_ids[i]);
+
+        // Transform
+        transform_tag(detection, homographies[ active_cams[i] ], homographies[0]);
+
+        // Add to map
+        unified_tag_detections.push_back(detection);
+
+        // cout << "active same  tag:" << tag_ids[i] << " camera:" << active_cams[i] << endl;
+      }
+      catch(const std::out_of_range &oorerr){
+        // Value does not exist, need to search for another camera
+        active_cams[i] = -1;
+      }
+    }
+  }
+
+  for (int i = 0; i < tag_ids.size(); ++i){
+    // For each tag which does not have an active camera
+    if(active_cams[i] == -1){
+
+      for (int j = 0; j < ts_detections_ptrs.size(); ++j)
+      {
+        // Search in each camera
+        try{
+          // Get value if it exists in the tags detected by camera j
+          AprilTags::TagDetection detection = cam_tag_detections[ j ].at(tag_ids[i]);
+          active_cams[i] = j;
+          
+          // Transform
+          transform_tag(detection, homographies[ active_cams[i] ], homographies[0]);
+
+          // Add to map
+          unified_tag_detections.push_back(detection);
+
+          // cout << "active new   tag:" << tag_ids[i] << " camera:" << active_cams[i] << endl;
+
+          // Camera found
+          break;
+        }
+        catch(const std::out_of_range &oorerr){
+          // Value does not exist, need to search for another camera
+          active_cams[i] = -1;
+        }
+
+        if(active_cams[i] == -1){
+          // cout << "active none  tag:" << tag_ids[i] << " camera:" << active_cams[i] << endl;
+        }
+      }
+    }
+  }
+
+  return unified_tag_detections;
+}
+
+void transform_tag(AprilTags::TagDetection &detection, cv::Mat &homography, cv::Mat &homography_base){
+
+  // !! observecPerimeter not transformed
+
+  /////////////////////////
+  // Transform p and cxy //
+  /////////////////////////
+
+  vector<Point2f> points_old;
+  vector<Point2f> points_new;
+
+  // Get old coods
+  for (int i = 0; i < 4; ++i)
+  {
+    points_old.push_back(Point2f(detection.p[i].first, detection.p[i].second));
+  }
+  points_old.push_back(Point2f(detection.cxy.first, detection.cxy.second));
+
+  // Calculate new coods
+  perspectiveTransform(points_old, points_new, homography);
+
+  // Assign new coods
+  for (int i = 0; i < 4; ++i)
+  {
+    detection.p[i].first = points_new[i].x;
+    detection.p[i].second = points_new[i].y;
+  }
+
+  detection.cxy.first = points_new[4].x;
+  detection.cxy.second = points_new[4].y;
+
+
+
+  //////////////////////////
+  // Transform homography //
+  //////////////////////////
+
+  Eigen::Matrix3d homography_eigen, homography_base_eigen;
+  cv2eigen(homography, homography_eigen);
+  cv2eigen(homography_base, homography_base_eigen);
+
+  // cout << endl;
+  // cout << detection.id << endl;
+  // cout << detection.homography << endl;
+  // cout << endl;
+
+  detection.homography = homography_eigen * homography_base_eigen.inverse() * detection.homography;
+
+  // cout << detection.homography << endl;
+  // cout << endl;
+
+  ///////////////////
+  // Transform hxy //
+  ///////////////////
+  // Not done. (Not needed?)
+}
+
