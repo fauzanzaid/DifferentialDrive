@@ -105,6 +105,8 @@ class AprilInterfaceAndVideoCapture{
   //robot is assumed to be facing positive y direction of it's apriltag
   void findRobotPose(int ind, robot_pose &rob);
   void processImage(cv::Mat& image, cv::Mat& image_gray);
+  // Directly provide detections
+  void processDetections(std::vector<AprilTags::TagDetection> &tag_detections);
   // Load and process a single image
   void loadImages();
   // check the image container to find if video is to be processed or image

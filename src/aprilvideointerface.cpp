@@ -324,6 +324,10 @@ void AprilInterfaceAndVideoCapture::processImage(cv::Mat& image, cv::Mat& image_
   cout << detections.size() << " tags detected:" << endl;
 }
 
+void AprilInterfaceAndVideoCapture::processDetections(std::vector<AprilTags::TagDetection> &tag_detections){
+  detections = tag_detections;
+}
+
 // Load and process a single image
 void AprilInterfaceAndVideoCapture::loadImages() {
   cv::Mat image;
